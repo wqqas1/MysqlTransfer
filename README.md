@@ -1,6 +1,7 @@
 # MariaDB to Amazon Aurora RDS or any MySQL Migration Script
 
 This PHP script facilitates the migration of a MariaDB database to Amazon Aurora RDS MySQL 8 or any compatible mysql/mariadb. It transfers the schema and data from the source MariaDB database to the target MySQL database while maintaining data integrity and allowing for pausing and resuming the migration process. The script is multithreaded, provides a progress bar, and ensures that server load does not exceed a specified threshold during the transfer. 
+I used [mydumper](https://github.com/mydumper/mydumper) for sometime which is a great project but had a different idea in mind so created my own script. Also I don't have to compile php for minor changes and runs fine on any platform without any need to compile. Also when transferring from a server that is in production the load should not go high and this was the problem i was facing with [mydumper](https://github.com/mydumper/mydumper) If you like this script do not forget to star
 
 Usually such script is required to handle hude db transfers like 100 GB or above. This is for personal use. And anyone is welcome to use it.
 
