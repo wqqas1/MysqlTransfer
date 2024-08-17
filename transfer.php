@@ -6,7 +6,6 @@ $sourceConfig = [
     'host' => 'source_host',
     'username' => 'source_user',
     'password' => 'source_password',
-    'dbname' => 'source_db',
     'port' => 3306
 ];
 
@@ -14,7 +13,6 @@ $targetConfig = [
     'host' => 'target_host',
     'username' => 'target_user',
     'password' => 'target_password',
-    'dbname' => 'target_db',
     'port' => 3306
 ];
 
@@ -34,10 +32,10 @@ function getServerLoad() {
     return $load[0] * 100;
 }
 
-function showProgressBar($progress, $total, $table, $rowsTransferred) {
+function showProgressBar($progress, $total, $message) {
     $percentage = round(($progress / $total) * 100);
     $bar = str_repeat('=', $percentage / 2) . str_repeat(' ', 50 - ($percentage / 2));
-    echo sprintf("\r[%s] %s%% (%d/%d) - Table: %s, Rows Transferred: %d", $bar, $percentage, $progress, $total, $table, $rowsTransferred);
+    echo sprintf("\r[%s] %s%% (%d/%d) - %s", $bar, $percentage, $progress, $total, $message);
     if ($progress == $total) {
         echo PHP_EOL;
     }
@@ -64,10 +62,10 @@ function fetchRows($source, $table) {
     $result->free(); // Free the result set when done
 }
 
-function migrateSchema($source, $target) {
+function migrateSchema($source, $target, $dbName) {
     $result = $source->query('SHOW TABLES');
     if ($result === false) {
-        logMessage("Failed to fetch tables from source: " . $source->error);
+        logMessage("Failed to fetch tables from source database `$dbName`: " . $source->error);
         return; // Exit if query fails
     }
 
@@ -114,7 +112,7 @@ function migrateData($source, $target, $table) {
         $rowCount++;
         if ($rowCount % $batchSize == 0 || $rowCount == $totalRows) {
             // Show progress
-            showProgressBar($rowCount, $totalRows, $table, $rowCount);
+            showProgressBar($rowCount, $totalRows, "Table: $table, Rows Transferred: $rowCount");
         }
     }
 
@@ -144,60 +142,128 @@ function worker($sourceConfig, $targetConfig, $table) {
     $target->close();
 }
 
-$source = new mysqli($sourceConfig['host'], $sourceConfig['username'], $sourceConfig['password'], $sourceConfig['dbname'], $sourceConfig['port']);
-$target = new mysqli($targetConfig['host'], $targetConfig['username'], $targetConfig['password'], $targetConfig['dbname'], $targetConfig['port']);
+function getDatabases($source) {
+    $result = $source->query('SHOW DATABASES');
+    if ($result === false) {
+        logMessage("Failed to fetch databases: " . $source->error);
+        die("Failed to fetch databases. Check the logs for details.");
+    }
 
-// Error handling for database connection
+    $databases = [];
+    while ($row = $result->fetch_row()) {
+        $dbName = $row[0];
+        if (!in_array($dbName, ['information_schema', 'mysql', 'performance_schema', 'sys'])) {
+            $databases[] = $dbName;
+        }
+    }
+    return $databases;
+}
+
+function selectDatabases($databases) {
+    echo "Available databases:\n";
+    foreach ($databases as $index => $dbName) {
+        echo sprintf("[%d] %s\n", $index + 1, $dbName);
+    }
+
+    echo "Enter the numbers of the databases you want to migrate (comma-separated), or 'all' to select all: ";
+    $input = trim(fgets(STDIN));
+
+    if (strtolower($input) === 'all') {
+        return $databases;
+    }
+
+    $selectedIndices = array_map('intval', explode(',', $input));
+    $selectedDatabases = [];
+
+    foreach ($selectedIndices as $index) {
+        if (isset($databases[$index - 1])) {
+            $selectedDatabases[] = $databases[$index - 1];
+        }
+    }
+
+    return $selectedDatabases;
+}
+
+function getCharacterEncoding($source, $dbName) {
+    $result = $source->query("SELECT default_character_set_name FROM information_schema.SCHEMATA WHERE schema_name = '$dbName'");
+    if ($result === false) {
+        logMessage("Failed to fetch character encoding for database `$dbName`: " . $source->error);
+        return null; // Return null if query fails
+    }
+    $row = $result->fetch_assoc();
+    return $row['default_character_set_name'];
+}
+
+// Connect to source server to get available databases
+$source = new mysqli($sourceConfig['host'], $sourceConfig['username'], $sourceConfig['password'], '', $sourceConfig['port']);
 if ($source->connect_error) {
-    die("Connection to source database failed: " . $source->connect_error);
-}
-if ($target->connect_error) {
-    die("Connection to target database failed: " . $target->connect_error);
+    die("Connection to source server failed: " . $source->connect_error);
 }
 
-migrateSchema($source, $target);
+$databases = getDatabases($source);
+$selectedDatabases = selectDatabases($databases);
 
-$tablesResult = $source->query('SHOW TABLES');
-if ($tablesResult === false) {
-    logMessage("Failed to fetch tables from source database: " . $source->error);
-    die("Failed to fetch tables. Check the logs for details.");
-}
+foreach ($selectedDatabases as $dbName) {
+    $source->select_db($dbName);
 
-$tables = [];
-while ($row = $tablesResult->fetch_row()) {
-    $tables[] = $row[0];
-}
+    // Get the character encoding of the source database
+    $characterEncoding = getCharacterEncoding($source, $dbName);
+    $characterEncodingClause = $characterEncoding ? "DEFAULT CHARACTER SET $characterEncoding" : "";
 
-$processes = [];
-foreach ($tables as $table) {
-    while (getServerLoad() > $maxLoad) {
-        echo "Pausing migration due to high server load...\n";
-        sleep(10);
+    // Create the target database with the same character encoding if it doesn't exist
+    $target = new mysqli($targetConfig['host'], $targetConfig['username'], $targetConfig['password'], '', $targetConfig['port']);
+    $target->query("CREATE DATABASE IF NOT EXISTS `$dbName` $characterEncodingClause");
+    $target->select_db($dbName);
+
+    migrateSchema($source, $target, $dbName);
+
+    $tablesResult = $source->query('SHOW TABLES');
+    if ($tablesResult === false) {
+        logMessage("Failed to fetch tables from database `$dbName`: " . $source->error);
+        continue; // Skip this database if query fails
     }
 
-    $pid = pcntl_fork();
-    if ($pid == -1) {
-        die('Could not fork');
-    } elseif ($pid) {
-        // Parent process
-        $processes[] = $pid;
-    } else {
-        // Child process
-        worker($sourceConfig, $targetConfig, $table);
-        exit(0);
+    $tables = [];
+    while ($row = $tablesResult->fetch_row()) {
+        $tables[] = $row[0];
     }
 
-    if (count($processes) >= $threads) {
-        pcntl_wait($status);
-    }
-}
+    $totalTables = count($tables);
+    $processedTables = 0;
 
-foreach ($processes as $pid) {
-    pcntl_waitpid($pid, $status);
+    $processes = [];
+    foreach ($tables as $table) {
+        checkPause();
+
+        $pid = pcntl_fork();
+        if ($pid == -1) {
+            logMessage("Failed to fork process for table `$table` in database `$dbName`.");
+            continue;
+        } elseif ($pid) {
+            $processes[] = $pid;
+        } else {
+            worker($sourceConfig, $targetConfig, $table);
+            exit(0);
+        }
+
+        if (count($processes) >= $threads) {
+            pcntl_wait($status);
+            $processedTables++;
+            showProgressBar($processedTables, $totalTables, "Database: $dbName");
+        }
+    }
+
+    foreach ($processes as $pid) {
+        pcntl_waitpid($pid, $status);
+        $processedTables++;
+        showProgressBar($processedTables, $totalTables, "Database: $dbName");
+    }
+
+    echo "Migration of database `$dbName` completed!\n";
 }
 
 $source->close();
 $target->close();
 
-echo "Migration completed!\n";
+echo "All selected databases have been migrated!\n";
 ?>
