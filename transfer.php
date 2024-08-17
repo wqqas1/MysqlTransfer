@@ -53,6 +53,11 @@ function checkPause() {
 
 function fetchRows($source, $table) {
     $result = $source->query("SELECT * FROM `$table`", MYSQLI_USE_RESULT);
+    if ($result === false) {
+        logMessage("Failed to fetch rows from table `$table`: " . $source->error);
+        return; // Exit the function if the query fails
+    }
+
     while ($row = $result->fetch_assoc()) {
         yield $row;
     }
@@ -61,9 +66,20 @@ function fetchRows($source, $table) {
 
 function migrateSchema($source, $target) {
     $result = $source->query('SHOW TABLES');
+    if ($result === false) {
+        logMessage("Failed to fetch tables from source: " . $source->error);
+        return; // Exit if query fails
+    }
+
     while ($row = $result->fetch_row()) {
         $table = $row[0];
-        $createTable = $source->query("SHOW CREATE TABLE `$table`")->fetch_row()[1];
+        $createTableResult = $source->query("SHOW CREATE TABLE `$table`");
+        if ($createTableResult === false) {
+            logMessage("Failed to fetch create statement for table `$table`: " . $source->error);
+            continue;
+        }
+
+        $createTable = $createTableResult->fetch_row()[1];
         if ($target->query($createTable) === FALSE) {
             logMessage("Failed to create table `$table`: " . $target->error);
         }
@@ -71,12 +87,16 @@ function migrateSchema($source, $target) {
 }
 
 function migrateData($source, $target, $table) {
-    global $logFile, $batchSize;
+    global $batchSize;
 
     // Temporarily disable foreign key checks
     $target->query('SET FOREIGN_KEY_CHECKS=0');
 
     $result = $source->query("SELECT COUNT(*) FROM `$table`");
+    if ($result === false) {
+        logMessage("Failed to count rows in table `$table`: " . $source->error);
+        return; // Exit if query fails
+    }
     $totalRows = $result->fetch_row()[0];
 
     $rowCount = 0;
@@ -100,7 +120,10 @@ function migrateData($source, $target, $table) {
 
     // Set auto-increment value
     $autoIncrementResult = $source->query("SHOW TABLE STATUS LIKE '$table'");
-    if ($autoIncrementRow = $autoIncrementResult->fetch_assoc()) {
+    if ($autoIncrementResult === false) {
+        logMessage("Failed to fetch auto increment value for table `$table`: " . $source->error);
+    } else {
+        $autoIncrementRow = $autoIncrementResult->fetch_assoc();
         $autoIncrementValue = $autoIncrementRow['Auto_increment'];
         if ($autoIncrementValue) {
             $target->query("ALTER TABLE `$table` AUTO_INCREMENT = $autoIncrementValue");
@@ -135,6 +158,11 @@ if ($target->connect_error) {
 migrateSchema($source, $target);
 
 $tablesResult = $source->query('SHOW TABLES');
+if ($tablesResult === false) {
+    logMessage("Failed to fetch tables from source database: " . $source->error);
+    die("Failed to fetch tables. Check the logs for details.");
+}
+
 $tables = [];
 while ($row = $tablesResult->fetch_row()) {
     $tables[] = $row[0];
