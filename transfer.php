@@ -1,5 +1,7 @@
 <?php
 
+ini_set('memory_limit', '1G'); // Increase memory limit to 1GB, adjust as needed
+
 $sourceConfig = [
     'host' => 'source_host',
     'username' => 'source_user',
@@ -20,6 +22,7 @@ $maxLoad = 75; // Maximum server load percentage
 $threads = 4; // Number of threads to use
 $logFile = 'migration_log.txt'; // Log file for error logging
 $pauseFile = 'pause_migration.txt'; // File to signal pause
+$batchSize = 500; // Reduced batch size for lower memory usage
 
 function logMessage($message) {
     global $logFile;
@@ -48,6 +51,14 @@ function checkPause() {
     }
 }
 
+function fetchRows($source, $table) {
+    $result = $source->query("SELECT * FROM `$table`", MYSQLI_USE_RESULT);
+    while ($row = $result->fetch_assoc()) {
+        yield $row;
+    }
+    $result->free(); // Free the result set when done
+}
+
 function migrateSchema($source, $target) {
     $result = $source->query('SHOW TABLES');
     while ($row = $result->fetch_row()) {
@@ -60,7 +71,7 @@ function migrateSchema($source, $target) {
 }
 
 function migrateData($source, $target, $table) {
-    global $logFile;
+    global $logFile, $batchSize;
 
     // Temporarily disable foreign key checks
     $target->query('SET FOREIGN_KEY_CHECKS=0');
@@ -68,11 +79,9 @@ function migrateData($source, $target, $table) {
     $result = $source->query("SELECT COUNT(*) FROM `$table`");
     $totalRows = $result->fetch_row()[0];
 
-    $result = $source->query("SELECT * FROM `$table`");
     $rowCount = 0;
-    $batchSize = 1000; // Adjust batch size for performance
 
-    while ($row = $result->fetch_assoc()) {
+    foreach (fetchRows($source, $table) as $row) {
         checkPause(); // Check if the script should pause
 
         $columns = implode('`, `', array_keys($row));
