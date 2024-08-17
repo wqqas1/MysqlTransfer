@@ -113,4 +113,4 @@ This PHP script facilitates the migration of a MariaDB database to Amazon Aurora
 ## Contributing
     - Contributions are welcome! Please fork this repository, make your changes, and submit a pull request.
 ## License
-     - This project is licensed under the MIT License. See the LICENSE file for details.
+     - This project is licensed under the GNU GENERAL PUBLIC License. See the LICENSE file for details.
